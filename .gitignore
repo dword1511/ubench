@@ -1,0 +1,6 @@
+*~
+ubench
+ubench-*
+*.o
+~ubench.tmp
+*.log
