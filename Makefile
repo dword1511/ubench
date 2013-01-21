@@ -1,5 +1,5 @@
 TOOLCHAIN_ARM=arm-linux-gnueabi-
-TOOLCHAIN_IOS=
+TOOLCHAIN_IOS=arm-apple-darwin-
 TOOLCHAIN_X86=
 
 all: ubench
@@ -8,6 +8,9 @@ ubench:
 	gcc -c -O3 -Wall -D_GNU_SOURCE ubench.c
 	gcc -o ubench ubench.o -lrt
 	strip -s ubench
+
+install: ubench
+	cp ubench /usr/local/bin/
 
 cross: ubench-x86 ubench-x86_64 ubench-ios ubench-arm
 
@@ -22,6 +25,9 @@ ubench-x86_64:
 	$(TOOLCHAIN_X86)strip -s ubench-x86_64
 
 ubench-ios:
+	$(TOOLCHAIN_IOS)gcc -c -O3 -Wall -D_GNU_SOURCE -o ubencharm.o ubench.c
+	$(TOOLCHAIN_IOS)gcc -static -o ubench-arm ubencharm.o -lrt
+	$(TOOLCHAIN_IOS)strip -s ubench-arm
 
 ubench-arm:
 	$(TOOLCHAIN_ARM)gcc -c -O3 -Wall -D_GNU_SOURCE -o ubencharm.o ubench.c
