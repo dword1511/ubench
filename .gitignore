@@ -4,3 +4,4 @@ ubench-*
 *.o
 ~ubench.tmp
 *.log
+prebuilt/*

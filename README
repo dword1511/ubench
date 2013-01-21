@@ -1,12 +1,22 @@
 ubench
 A simple storage device benchmark tool for POSIX systems that operates on the top of a file system.
-
-Require kernel version 2.6.28 or later to run on Linux.
-iOS support is not unlikely at present due to the short of the toolchain required.
-Other platform untested.
-This program will not work for some special file systems, such as tmpfs.
+Just like what ATTO Benchmark does under Windows.
 
 WARNING:
 Running this program on nearly worn-out devices may render the device unstable or even damaged.
 Never try this with NOR flash memories in routers, they are slow and they are fragile.
-THE AUTHOR TAKES NO RESPONSIBILITY FOR ANY AFTERMATH CAUSED BY THIS SOFTWARE.
+
+Disclaimer:
+USE AT YOUR OWN RISK. THE AUTHOR TAKES NO RESPONSIBILITY FOR ANY DAMAGE CAUSED BY THIS SOFTWARE.
+
+Platform Specified Information
+======================================================
+Linux:
+
+This program requires kernel version 2.6.28 or later to run on Linux. Elder kernel may work, but may not work perfectly.
+This program will not work with some special file systems, such as tmpfs.
+
+iOS:
+iOS support is not unlikely to be done at present due to the lack of the toolchain required.
+
+Other platform untested at the moment.
