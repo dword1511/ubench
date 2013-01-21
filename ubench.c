@@ -19,31 +19,51 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.*
  *************************************************************************/
 
+// Platform setup first
+#ifdef __linux
+  #define _GNU_SOURCE
+  #define TIMER CLOCK_MONOTONIC_RAW
+#else
+  // This one is not NTP-proof like CLOCK_MONOTONIC_RAW.
+  #define TIMER CLOCK_MONOTONIC
+  #warning "Falling back to CLOCK_MONOTONIC!"
+#endif
+
+#ifdef _FORCE_FALLBACK
+  #define TIMER CLOCK_MONOTONIC
+  #undefine _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <time.h>
 #include <string.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <ctype.h> 
+#include <sys/utsname.h>
+
 #include "rand.h"
 #include "version.h"
 
 #define TEST_FILE_NAME "~ubench.tmp"
 #define TEST_MAX_BLOCK 8 // 8MB
 
+
+
 // TODO: Try 2-fd method: write with regular + fdatasync and read with O_DIRECT.
+// TODO: Find out how abortion on Android happened.
 
 char     *myself;
 uint8_t  *rand_8mb, *read_buf, *zeros;
 char     fn[512];
 int      fd            = -1;
-uint16_t bench_size    = 128; // in mega bytes, larger than 8MB
+uint16_t bench_size    = 256; // in mega bytes, larger than 8MB
 char     *size_pattern = "51248abcdefghij";
 
 void signal_handler(int signum) {
@@ -157,6 +177,9 @@ void fill_out(int fd, uint16_t size, char *path) {
       fprintf(stderr, "\nFailed to write to \"%s\".\n", path);
       _exit(errno);
     }
+#ifndef _GNU_SOURCE
+    fdatasync(fd);
+#endif
     if(i % 4 == 3)fprintf(stdout, ".");
   }
 
@@ -212,10 +235,18 @@ void do_bench(int fd, char packet, uint16_t size) {
   sleep(1);
 
   // Write benchmark
-  clock_gettime(CLOCK_MONOTONIC_RAW, &tp_pre);
+  clock_gettime(TIMER, &tp_pre);
+#ifdef _GNU_SOURCE
   for(i = 0; i < loops; i ++) write(fd, rand_8mb, packet_size);
+#else
+  // Not-so-good performance mode
+  for(i = 0; i < loops; i ++) {
+    write(fd, rand_8mb, packet_size);
+    fdatasync(fd);
+  }
+#endif
   fdatasync(fd);
-  clock_gettime(CLOCK_MONOTONIC_RAW, &tp_post);
+  clock_gettime(TIMER, &tp_post);
   if(stat(fn, &stat_buf) == -1) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
     _exit(errno);
@@ -228,9 +259,20 @@ void do_bench(int fd, char packet, uint16_t size) {
   sleep(1);
 
   // Read benchmark
-  clock_gettime(CLOCK_MONOTONIC_RAW, &tp_pre);
+  clock_gettime(TIMER, &tp_pre);
+#ifdef _GNU_SOURCE
   for(i = 0; i < loops; i ++) read(fd, read_buf, packet_size);
-  clock_gettime(CLOCK_MONOTONIC_RAW, &tp_post);
+#else
+  // The not-garuanteed method plus really poor performance
+  // because you need to call posix_fadvise every time.
+  // Maybe time each loop and finally sum up will make it better.
+  // Then remove the warning in main function.
+  for(i = 0; i < loops; i ++) {
+    posix_fadvise(fd, 0, (off_t)size * 1024 * 1024, POSIX_FADV_DONTNEED);
+    read(fd, read_buf, packet_size);
+  }
+#endif
+  clock_gettime(TIMER, &tp_post);
   if(stat(fn, &stat_buf) == -1) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
     _exit(errno);
@@ -239,9 +281,10 @@ void do_bench(int fd, char packet, uint16_t size) {
 }
 
 int main(int argc, char *argv[]) {
-  struct stat stat_buf;
-  char        *mount_point;
-  char        o;
+  struct stat    stat_buf;
+  struct utsname uname_buf;
+  char           *mount_point;
+  char           o;
 
   setbuf(stdout, NULL);
   myself      = argv[0];
@@ -309,28 +352,49 @@ while checking the existence of the benchmark file \"%s\".\n", fn);
     return errno;
   }
 
-  assemble_data();
-  fprintf(stdout, "This is ubench version %s.\n", VERSION);
-
   // Capture Ctrl-C after fn is set
   signal(SIGINT, signal_handler);
 
   // Attempt to open file for binary reading and writting
+#ifdef _GNU_SOURCE
   fd = open(fn, O_RDWR | O_CREAT | O_NOATIME | O_DIRECT, 0644);
+#else
+  // O_NOATIME and O_DIRECT are GNU extension,
+  // but the read test is not garuanteed to work without O_DIRECT.
+  fd = open(fn, O_RDWR | O_CREAT, 0644);
+#endif
   if(fd == -1) {
     fprintf(stderr, "Unable to open \"%s\" for benchmark.\n", fn);
     return errno;
   }
 
+  // Everything looks right, let's start.
+  assemble_data();
+  fprintf(stdout, "This is ubench version %s.\n", VERSION);
+  // TODO: also print mainboard / RAM / processor speed info.
+  // TODO: also print some information about target device.
+  if(uname(&uname_buf) == -1) {
+    fprintf(stdout, "Failed to get system information due to error %s.\n", strerror(errno));
+  }
+  else {
+    fprintf(stdout, "OS: %s %s\nArch: %s\n", \
+    uname_buf.sysname, uname_buf.release, uname_buf.machine);
+  }
+#ifndef _GNU_SOURCE
+  fprintf(stdout, "O_DIRECT is not supported on this platform.\n\
+Read speed will be lower than its actual value while packet size is small.\n");
+#endif
   fill_out(fd, bench_size, fn);
 
   // Do the actual job
+  // TODO: add time stamp one start and stop messages
   fprintf(stdout, "Benchmark started.\n\nSIZE    WRITE     READ\n KiB     KB/s     KB/s\n\
 ======================\n");
   while(*size_pattern) {
     do_bench(fd, *size_pattern, bench_size);
     size_pattern++;
   }
+  fprintf(stdout, "\nBenchmark finished.\n");
 
   // Hopefully users would not move test file around.
   // Unlink by fd is no where to be found.
