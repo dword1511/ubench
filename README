@@ -2,7 +2,8 @@ ubench
 A simple storage device benchmark tool for POSIX systems that operates on the top of a file system.
 
 Require kernel version 2.6.28 or later to run on Linux.
-iOS support is on the way (or it may never happen).
+iOS support is not unlikely at present due to the short of the toolchain required.
+Other platform untested.
 This program will not work for some special file systems, such as tmpfs.
 
 WARNING:

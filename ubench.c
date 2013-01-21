@@ -220,7 +220,7 @@ void do_bench(int fd, char packet, uint16_t size) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
     _exit(errno);
   }
-  else fprintf(stdout, "%8d ", size * 1000 * 1024 / calc_ms(tp_pre, tp_post));
+  else fprintf(stdout, "%8d ", (uint32_t) size * 1024 * 1024 / calc_ms(tp_pre, tp_post));
 
   // Clear the effects from last loop
   lseek(fd, 0, SEEK_SET);
@@ -235,7 +235,7 @@ void do_bench(int fd, char packet, uint16_t size) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
     _exit(errno);
   }
-  else fprintf(stdout, "%8d\n", size * 1000 * 1024 / calc_ms(tp_pre, tp_post));
+  else fprintf(stdout, "%8d\n", (uint32_t) size * 1024 * 1024 / calc_ms(tp_pre, tp_post));
 }
 
 int main(int argc, char *argv[]) {
@@ -325,7 +325,7 @@ while checking the existence of the benchmark file \"%s\".\n", fn);
   fill_out(fd, bench_size, fn);
 
   // Do the actual job
-  fprintf(stdout, "Benchmark started.\n\nSIZE    WRITE     READ\n  KB     KB/s     KB/s\n\
+  fprintf(stdout, "Benchmark started.\n\nSIZE    WRITE     READ\n KiB     KB/s     KB/s\n\
 ======================\n");
   while(*size_pattern) {
     do_bench(fd, *size_pattern, bench_size);
