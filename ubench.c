@@ -21,8 +21,16 @@
 
 // Platform setup first
 #ifdef __linux
-  #define _GNU_SOURCE
+  #ifndef EMBEDDED
+    #define _GNU_SOURCE
+  #else
+    #undef _GNU_SOURCE
+  #endif
   #define TIMER CLOCK_MONOTONIC_RAW
+
+  #if defined(EMBEDDED) && !defined(CLOCK_MONOTONIC_RAW)
+    #define CLOCK_MONOTONIC_RAW 4
+  #endif
 #else
   // This one is not NTP-proof like CLOCK_MONOTONIC_RAW.
   #define TIMER CLOCK_MONOTONIC
@@ -31,7 +39,7 @@
 
 #ifdef _FORCE_FALLBACK
   #define TIMER CLOCK_MONOTONIC
-  #undefine _GNU_SOURCE
+  #undef _GNU_SOURCE
 #endif
 
 #include <stdio.h>
@@ -52,22 +60,29 @@
 #include "version.h"
 
 #define TEST_FILE_NAME "~ubench.tmp"
-#define TEST_MAX_BLOCK 8 // 8MB
-
-
+#ifdef EMBEDDED
+  #define TEST_MAX_BLOCK 2 // 2MB
+#else
+  #define TEST_MAX_BLOCK 8 // 8MB
+#endif
 
 // TODO: Try 2-fd method: write with regular + fdatasync and read with O_DIRECT.
 // TODO: Find out how abortion on Android happened.
 
 char     *myself;
-uint8_t  *rand_8mb, *read_buf, *zeros;
+uint8_t  *write_buf, *read_buf, *zeros;
 char     fn[512];
 int      fd            = -1;
+#ifdef EMBEDDED
+uint16_t bench_size    = 16; // in mega bytes, larger than 2MB
+char     *size_pattern = "51248abcdefgh";
+#else
 uint16_t bench_size    = 256; // in mega bytes, larger than 8MB
 char     *size_pattern = "51248abcdefghij";
+#endif
 
 void signal_handler(int signum) {
-  fprintf(stderr, "\nReceived SIGTERM, benchmark terminated.\nCleaning up...\n");
+  fprintf(stderr, "\nReceived signal, benchmark terminated.\nCleaning up...\n");
 
   if(fd != -1) {
     close(fd);
@@ -78,6 +93,31 @@ void signal_handler(int signum) {
 }
 
 void print_help(void) {
+#ifdef EMBEDDED
+  fprintf(stderr, "\
+ubench: A Simple Storage Device Benchmark Tool for POSIX\n\
+(That operates on the top of a file system)\n\
+Version %s for embedded devices\n\
+(C)dword1511 <zhangchi866@gmail.com>\n\
+Project homepage: https://github.com/dword1511/ubench\n\
+\n\
+  Usage: %s -p mount_point <-h>\n\
+         <-s benchmark_size>\n\
+         <-a packet_size_pattern>\n\
+\n\
+Benchmark size is measured in MBytes and should be multiple of 8 (MBytes).\n\
+Packet size pattern are described below:\n\
+5 = 0.5KB 1 =   1KB 2 =   2KB 4 =   4KB 8 =   8KB\n\
+a =  16KB b =  32KB c =  64KB d = 128KB e = 256KB\n\
+f = 512KB g =   1MB h =   2MB\n\
+For example, '-a 548dhh' means 0.5KB-4KB-8KB-128KB-2MB-2MB packet size sequence.\n\
+For the letters, only those in lower case are accepted.\n\
+\n\
+Benchmark file name is hard-coded as '%s'.\n\
+Default benchmark size     : %dMB\n\
+Default pcaket size pattern: %s\n\
+", VERSION, myself, TEST_FILE_NAME, bench_size, size_pattern);
+#else
   fprintf(stderr, "\
 ubench: A Simple Storage Device Benchmark Tool for POSIX\n\
 (That operates on the top of a file system)\n\
@@ -101,6 +141,7 @@ Benchmark file name is hard-coded as '%s'.\n\
 Default benchmark size     : %dMB\n\
 Default pcaket size pattern: %s\n\
 ", VERSION, myself, TEST_FILE_NAME, bench_size, size_pattern);
+#endif
   _exit(EINVAL);
 }
 
@@ -129,8 +170,10 @@ void check_pattern(char *s) {
       case 'f':
       case 'g':
       case 'h':
+#ifndef EMBEDDED
       case 'i':
       case 'j':
+#endif
         break;
       default:
         fprintf(stderr, "Invalid packet size symbol: %c.\n\n", *s);
@@ -143,12 +186,12 @@ void check_pattern(char *s) {
 void assemble_data(void) {
   uint32_t x, y;
 
-  if(posix_memalign((void **) &rand_8mb, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
-    fprintf(stderr, "Failed to allocate 8MB of page-aligned RAM.\n");
+  if(posix_memalign((void **) &write_buf, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
+    fprintf(stderr, "Failed to allocate %dMB of page-aligned RAM.\n", TEST_MAX_BLOCK);
     _exit(errno);
   }
   if(posix_memalign((void **) &read_buf, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
-    fprintf(stderr, "Failed to allocate 8MB of page-aligned RAM.\n");
+    fprintf(stderr, "Failed to allocate %dMB of page-aligned RAM.\n", TEST_MAX_BLOCK);
     _exit(errno);
   }
   if(posix_memalign((void **) &zeros, getpagesize(), 1024 * 1024) != 0) {
@@ -157,10 +200,10 @@ void assemble_data(void) {
   }
 
   for(x = 0; x < 1024; x ++) {
-    for(y = 0; y < 1024; y ++) rand_8mb[x * 1024 + y] = rand_kilo[x] ^ rand_kilo[y];
+    for(y = 0; y < 1024; y ++) write_buf[x * 1024 + y] = rand_kilo[x] ^ rand_kilo[y];
   }
-  for(x = 0; x < 8; x ++) {
-    for(y = 0; y < 1024 * 1024; y ++) rand_8mb[x * 1024 * 1024 + y] = rand_8mb[y];
+  for(x = 0; x < TEST_MAX_BLOCK; x ++) {
+    for(y = 0; y < 1024 * 1024; y ++) write_buf[x * 1024 * 1024 + y] = write_buf[y];
   }
 
   for(x = 0; x < 1024 * 1024; x ++) zeros[x] = 0;
@@ -237,11 +280,11 @@ void do_bench(int fd, char packet, uint16_t size) {
   // Write benchmark
   clock_gettime(TIMER, &tp_pre);
 #ifdef _GNU_SOURCE
-  for(i = 0; i < loops; i ++) write(fd, rand_8mb, packet_size);
+  for(i = 0; i < loops; i ++) write(fd, write_buf, packet_size);
 #else
   // Not-so-good performance mode
   for(i = 0; i < loops; i ++) {
-    write(fd, rand_8mb, packet_size);
+    write(fd, write_buf, packet_size);
     fdatasync(fd);
   }
 #endif
@@ -354,6 +397,7 @@ while checking the existence of the benchmark file \"%s\".\n", fn);
 
   // Capture Ctrl-C after fn is set
   signal(SIGINT, signal_handler);
+  signal(SIGTERM, signal_handler);
 
   // Attempt to open file for binary reading and writting
 #ifdef _GNU_SOURCE
@@ -364,13 +408,25 @@ while checking the existence of the benchmark file \"%s\".\n", fn);
   fd = open(fn, O_RDWR | O_CREAT, 0644);
 #endif
   if(fd == -1) {
-    fprintf(stderr, "Unable to open \"%s\" for benchmark.\n", fn);
-    return errno;
+    int err = errno;
+    fprintf(stderr, "Unable to open \"%s\" for benchmark: %s.\n", fn, strerror(errno));
+    if(err == EINVAL) fprintf(stderr, "\
+======================\n\
+It seems that opening the benchmark file with the O_DIRECT flag has failed.\n\
+Please make sure you are not running the benchmark on a RAM or MTD device.\n");
+    fprintf(stderr, "\nCleaning up...\n");
+    unlink(fn);
+    return err;
   }
 
   // Everything looks right, let's start.
   assemble_data();
+
+#ifdef EMBEDDED
+  fprintf(stdout, "This is ubench version %s for embedded devices.\n", VERSION);
+#else
   fprintf(stdout, "This is ubench version %s.\n", VERSION);
+#endif
   // TODO: also print mainboard / RAM / processor speed info.
   // TODO: also print some information about target device.
   if(uname(&uname_buf) == -1) {
@@ -381,7 +437,7 @@ while checking the existence of the benchmark file \"%s\".\n", fn);
     uname_buf.sysname, uname_buf.release, uname_buf.machine);
   }
 #ifndef _GNU_SOURCE
-  fprintf(stdout, "O_DIRECT is not supported on this platform.\n\
+  fprintf(stdout, "Warning: O_DIRECT is not supported on this platform.\n\
 Read speed will be lower than its actual value while packet size is small.\n");
 #endif
   fill_out(fd, bench_size, fn);
