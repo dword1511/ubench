@@ -2,7 +2,7 @@ PREFIX = /usr/local
 CC     = $(CROSS_COMPILE)gcc
 STRIP  = $(CROSS_COMPILE)strip
 SRCS   = ubench.c
-CFLAGS = -c -O3 -Wall
+CFLAGS = -c -O3 -Wall '-DVERSION="r1"'
 
 ########################################################################
 # Variables and default target

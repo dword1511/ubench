@@ -57,7 +57,6 @@
 #include <sys/utsname.h>
 
 #include "rand.h"
-#include "version.h"
 
 #define TEST_FILE_NAME "~ubench.tmp"
 #ifdef EMBEDDED
