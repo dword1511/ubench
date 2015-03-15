@@ -326,7 +326,7 @@ int main(int argc, char *argv[]) {
   struct stat    stat_buf;
   struct utsname uname_buf;
   char           *mount_point;
-  char           o;
+  int            o;
 
   setbuf(stdout, NULL);
   myself      = argv[0];
@@ -366,7 +366,10 @@ int main(int argc, char *argv[]) {
         }
         fprintf(stderr, "Unknown option character `\\x%x'.\n", optopt);
         return EINVAL;
-      default: abort();
+      default: {
+        fprintf(stderr, "getopt returned unexpected `\\x%x'.\n", o);
+        abort();
+      }
     }
   }
   if(mount_point == NULL) {
