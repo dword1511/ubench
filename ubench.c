@@ -66,7 +66,6 @@
 #endif
 
 // TODO: Try 2-fd method: write with regular + fdatasync and read with O_DIRECT.
-// TODO: Find out how abortion on Android happened.
 
 char     *myself;
 uint8_t  *write_buf, *read_buf, *zeros;
@@ -235,7 +234,7 @@ uint32_t calc_ms(struct timespec before, struct timespec after) {
 
 void do_bench(int fd, char packet, uint16_t size) {
   if(fd == -1 || size < 8) abort();
-  static uint32_t        i, loops, packet_size;
+  static uint64_t        i, loops, packet_size;
   static struct timespec tp_pre, tp_post;
   static struct stat stat_buf;
 
@@ -261,15 +260,15 @@ void do_bench(int fd, char packet, uint16_t size) {
   }
 
   // Reduce benchmark size for small packet runs.
-  loops = size * 1024 * 1024 / packet_size;
-  if(loops > 8192) {
-    loops = 8192;
-    size  = loops * packet_size / (1024 * 1024);
+  loops = size * 1024UL * 1024UL / packet_size;
+  if(loops > 8192UL) {
+    loops = 8192UL;
+    size  = loops * packet_size / (1024UL * 1024UL);
   }
 
   // Print information
   if(packet_size == 512) fprintf(stdout, " 0.5 ");
-  else fprintf(stdout, "%4d ", packet_size / 1024);
+  else fprintf(stdout, "%4ld ", packet_size / 1024UL);
 
   // Clear the effects from last loop
   lseek(fd, 0, SEEK_SET);
@@ -293,7 +292,7 @@ void do_bench(int fd, char packet, uint16_t size) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
     _exit(errno);
   }
-  else fprintf(stdout, "%8d ", (uint32_t) size * 1024 * 1024 / calc_ms(tp_pre, tp_post));
+  else fprintf(stdout, "%8ld ", size * 1024UL * 1024UL / calc_ms(tp_pre, tp_post));
 
   // Clear the effects from last loop
   lseek(fd, 0, SEEK_SET);
@@ -319,7 +318,7 @@ void do_bench(int fd, char packet, uint16_t size) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
     _exit(errno);
   }
-  else fprintf(stdout, "%8d\n", (uint32_t) size * 1024 * 1024 / calc_ms(tp_pre, tp_post));
+  else fprintf(stdout, "%8ld\n", size * 1024UL * 1024UL / calc_ms(tp_pre, tp_post));
 }
 
 int main(int argc, char *argv[]) {
