@@ -1,8 +1,7 @@
 PREFIX = /usr/local
 CC     = $(CROSS_COMPILE)gcc
-STRIP  = $(CROSS_COMPILE)strip
 SRCS   = ubench.c
-CFLAGS = -g -c -O3 -Wall '-DVERSION="r1"'
+CFLAGS = -g -c -O3 -Wall '-DVERSION="r2"'
 
 ########################################################################
 # Variables and default target
@@ -11,8 +10,7 @@ DEPS   = $(SRCS:.c=.d)
 -include $(DEPS)
 
 ubench: $(OBJS)
-	gcc -o ubench $(OBJS) -lrt
-	#$(STRIP) -s ubench
+	gcc -o ubench $(OBJS)
 
 ########################################################################
 # PHONY targets

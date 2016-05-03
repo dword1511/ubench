@@ -56,8 +56,9 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 
-#include "rand.h"
 
+/* NOTE: ENTROPY_BYTES must be a factor of 1024. Collecting lots of entropy can take long time. */
+#define ENTROPY_BYTES    4
 #define TEST_FILE_NAME "~ubench.tmp"
 #ifdef EMBEDDED
   #define TEST_MAX_BLOCK 2 // 2MB
@@ -87,7 +88,7 @@ void signal_handler(int signum) {
     unlink(fn);
   }
 
-  _exit(EINTR);
+  exit(EINTR);
 }
 
 void print_help(void) {
@@ -140,7 +141,7 @@ Default benchmark size     : %dMB\n\
 Default pcaket size pattern: %s\n\
 ", VERSION, myself, TEST_FILE_NAME, bench_size, size_pattern);
 #endif
-  _exit(EINVAL);
+  exit(EINVAL);
 }
 
 int is_uint(char *s) {
@@ -183,28 +184,61 @@ void check_pattern(char *s) {
 
 void assemble_data(void) {
   uint32_t x, y;
+  uint8_t rand_1k[1024];
+  FILE *fentropy;
 
   if(posix_memalign((void **) &write_buf, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
     fprintf(stderr, "Failed to allocate %dMB of page-aligned RAM.\n", TEST_MAX_BLOCK);
-    _exit(errno);
+    exit(errno);
   }
   if(posix_memalign((void **) &read_buf, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
     fprintf(stderr, "Failed to allocate %dMB of page-aligned RAM.\n", TEST_MAX_BLOCK);
-    _exit(errno);
+    exit(errno);
   }
   if(posix_memalign((void **) &zeros, getpagesize(), 1024 * 1024) != 0) {
     fprintf(stderr, "Failed to allocate 1MB of page-aligned RAM.\n");
-    _exit(errno);
+    exit(errno);
   }
 
-  for(x = 0; x < 1024; x ++) {
-    for(y = 0; y < 1024; y ++) write_buf[x * 1024 + y] = rand_kilo[x] ^ rand_kilo[y];
-  }
-  for(x = 0; x < TEST_MAX_BLOCK; x ++) {
-    for(y = 0; y < 1024 * 1024; y ++) write_buf[x * 1024 * 1024 + y] = write_buf[y];
+  fentropy = fopen("/dev/random", "rb");
+  if (fentropy == NULL) {
+    fprintf(stderr, "Failed to open /dev/random for entropy: %s\n", strerror(errno));
+    exit(errno);
   }
 
-  for(x = 0; x < 1024 * 1024; x ++) zeros[x] = 0;
+  memset(rand_1k, 0, 1024);
+
+  fprintf(stdout, "Getting %u bits of entropy...", ENTROPY_BYTES * 8U);
+  fread(rand_1k, ENTROPY_BYTES, 1, fentropy);
+  fclose(fentropy);
+  fprintf(stdout, " done: ");
+  for (x = 0; x < ENTROPY_BYTES; x ++) {
+    fprintf(stdout, "%02x", rand_1k[x]);
+  }
+  fprintf(stdout, "\n");
+
+  for (x = 0; x < ENTROPY_BYTES; x ++) {
+    srandom(rand_1k[x]);
+    for (y = 0; y < (1024 / ENTROPY_BYTES); y ++) {
+      rand_1k[y * ENTROPY_BYTES + x] = random();
+    }
+  }
+
+  for (x = 0; x < 1024; x ++) {
+    for (y = 0; y < 1024; y ++) {
+      write_buf[x * 1024 + y] = rand_1k[x] ^ rand_1k[y];
+    }
+  }
+
+  for (x = 0; x < TEST_MAX_BLOCK; x ++) {
+    for (y = 0; y < 1024 * 1024; y ++) {
+      write_buf[x * 1024 * 1024 + y] = write_buf[y];
+    }
+  }
+
+  for (x = 0; x < 1024 * 1024; x ++) {
+    zeros[x] = 0;
+  }
 }
 
 void fill_out(int fd, uint16_t size, char *path) {
@@ -216,7 +250,7 @@ void fill_out(int fd, uint16_t size, char *path) {
   for(i = 0; i < bench_size; i ++) {
     if(write(fd, zeros, 1024 * 1024) != 1024 * 1024) {
       fprintf(stderr, "\nFailed to write to \"%s\".\n", path);
-      _exit(errno);
+      exit(errno);
     }
 #ifndef _GNU_SOURCE
     fdatasync(fd);
@@ -290,7 +324,7 @@ void do_bench(int fd, char packet, uint16_t size) {
   clock_gettime(TIMER, &tp_post);
   if(stat(fn, &stat_buf) == -1) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
-    _exit(errno);
+    exit(errno);
   }
   else fprintf(stdout, "%8ld ", size * 1024UL * 1024UL / calc_ms(tp_pre, tp_post));
 
@@ -316,7 +350,7 @@ void do_bench(int fd, char packet, uint16_t size) {
   clock_gettime(TIMER, &tp_post);
   if(stat(fn, &stat_buf) == -1) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
-    _exit(errno);
+    exit(errno);
   }
   else fprintf(stdout, "%8ld\n", size * 1024UL * 1024UL / calc_ms(tp_pre, tp_post));
 }
