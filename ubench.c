@@ -250,6 +250,7 @@ void fill_out(int fd, uint16_t size, char *path) {
   for(i = 0; i < bench_size; i ++) {
     if(write(fd, zeros, 1024 * 1024) != 1024 * 1024) {
       fprintf(stderr, "\nFailed to write to \"%s\".\n", path);
+      unlink(path);
       exit(errno);
     }
 #ifndef _GNU_SOURCE
