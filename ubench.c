@@ -24,7 +24,7 @@
   #ifndef EMBEDDED
     #define _GNU_SOURCE
   #else
-    #undef _GNU_SOURCE
+    #undef _GNU_SOURCE /* Lots of weird things happening there, let's just assume this isn't available. */
   #endif
   #define TIMER CLOCK_MONOTONIC_RAW
 
@@ -32,8 +32,7 @@
     #define CLOCK_MONOTONIC_RAW 4
   #endif
 #else
-  // This one is not NTP-proof like CLOCK_MONOTONIC_RAW.
-  #define TIMER CLOCK_MONOTONIC
+  #define TIMER CLOCK_MONOTONIC /* This one is not NTP-proof like CLOCK_MONOTONIC_RAW. */
   #warning "Falling back to CLOCK_MONOTONIC!"
 #endif
 
@@ -46,6 +45,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <time.h>
 #include <string.h>
 #include <ctype.h>
@@ -55,35 +55,34 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <sys/statvfs.h>
+#include <sys/resource.h>
 
 
 /* NOTE: ENTROPY_BYTES must be a factor of 1024. Collecting lots of entropy can take long time. */
-#define ENTROPY_BYTES    4
-#define TEST_FILE_NAME "~ubench.tmp"
+#define ENTROPY_BYTES          4
+#define MAX_PATH_LEN           512
+#define TEST_FILE_NAME         "~ubench.tmp"
 #ifdef EMBEDDED
-  #define TEST_MAX_BLOCK 2 // 2MB
+  #define TEST_MAX_BLOCK       2 /* 2 MiB */
+  #define DEFAULT_BENCH_SIZE   16
+  #define DEFAULT_SIZE_PATTERN "51248abcdefgh"
 #else
-  #define TEST_MAX_BLOCK 8 // 8MB
+  #define TEST_MAX_BLOCK       8 /* 8 MiB */
+  #define DEFAULT_BENCH_SIZE   256
+  #define DEFAULT_SIZE_PATTERN "51248abcdefghij"
 #endif
 
-// TODO: Try 2-fd method: write with regular + fdatasync and read with O_DIRECT.
+static uint8_t  *write_buf, *read_buf, *zeros;
+static char     fn[MAX_PATH_LEN];
+static int      fd = -1;
+static uint16_t bench_size    = DEFAULT_BENCH_SIZE; /* in mega bytes, multiple of TEST_MAX_BLOCK. */
+static char     *size_pattern = DEFAULT_SIZE_PATTERN;
 
-char     *myself;
-uint8_t  *write_buf, *read_buf, *zeros;
-char     fn[512];
-int      fd            = -1;
-#ifdef EMBEDDED
-uint16_t bench_size    = 16; // in mega bytes, larger than 2MB
-char     *size_pattern = "51248abcdefgh";
-#else
-uint16_t bench_size    = 256; // in mega bytes, larger than 8MB
-char     *size_pattern = "51248abcdefghij";
-#endif
-
-void signal_handler(int signum) {
+static void signal_handler(int signum) {
   fprintf(stderr, "\nReceived signal, benchmark terminated.\nCleaning up...\n");
 
-  if(fd != -1) {
+  if (fd != -1) {
     close(fd);
     unlink(fn);
   }
@@ -91,7 +90,7 @@ void signal_handler(int signum) {
   exit(EINTR);
 }
 
-void print_help(void) {
+static void print_help(char *self) {
 #ifdef EMBEDDED
   fprintf(stderr, "\
 ubench: A Simple Storage Device Benchmark Tool for POSIX\n\
@@ -104,7 +103,7 @@ Project homepage: https://github.com/dword1511/ubench\n\
          <-s benchmark_size>\n\
          <-a packet_size_pattern>\n\
 \n\
-Benchmark size is measured in MBytes and should be multiple of 8 (MBytes).\n\
+Benchmark size is measured in MBytes and should be multiple of 2 (MBytes).\n\
 Packet size pattern are described below:\n\
 5 = 0.5KB 1 =   1KB 2 =   2KB 4 =   4KB 8 =   8KB\n\
 a =  16KB b =  32KB c =  64KB d = 128KB e = 256KB\n\
@@ -115,7 +114,7 @@ For the letters, only those in lower case are accepted.\n\
 Benchmark file name is hard-coded as '%s'.\n\
 Default benchmark size     : %dMB\n\
 Default pcaket size pattern: %s\n\
-", VERSION, myself, TEST_FILE_NAME, bench_size, size_pattern);
+", VERSION, self, TEST_FILE_NAME, DEFAULT_BENCH_SIZE, DEFAULT_SIZE_PATTERN);
 #else
   fprintf(stderr, "\
 ubench: A Simple Storage Device Benchmark Tool for POSIX\n\
@@ -139,23 +138,23 @@ For the letters, only those in lower case are accepted.\n\
 Benchmark file name is hard-coded as '%s'.\n\
 Default benchmark size     : %dMB\n\
 Default pcaket size pattern: %s\n\
-", VERSION, myself, TEST_FILE_NAME, bench_size, size_pattern);
+", VERSION, self, TEST_FILE_NAME, DEFAULT_BENCH_SIZE, DEFAULT_SIZE_PATTERN);
 #endif
   exit(EINVAL);
 }
 
-int is_uint(char *s) {
-  while(*s) {
-    if(*s < '0' || *s > '9') return 0;
+static bool is_uint(char *s) {
+  while (*s) {
+    if (*s < '0' || *s > '9') return false;
     s ++;
   }
 
-  return 1;
+  return true;
 }
 
-void check_pattern(char *s) {
-  while(*s) {
-    switch(*s) {
+static void check_pattern(char *s, char *self) {
+  while (*s) {
+    switch (*s) {
       case '5':
       case '1':
       case '2':
@@ -176,27 +175,27 @@ void check_pattern(char *s) {
         break;
       default:
         fprintf(stderr, "Invalid packet size symbol: %c.\n\n", *s);
-        print_help();
+        print_help(self);
     }
     s ++;
   }
 }
 
-void assemble_data(void) {
+static void assemble_data(void) {
   uint32_t x, y;
   uint8_t rand_1k[1024];
   FILE *fentropy;
 
-  if(posix_memalign((void **) &write_buf, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
-    fprintf(stderr, "Failed to allocate %dMB of page-aligned RAM.\n", TEST_MAX_BLOCK);
+  if (posix_memalign((void **) &write_buf, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
+    fprintf(stderr, "Failed to allocate %d MiB of page-aligned RAM.\n", TEST_MAX_BLOCK);
     exit(errno);
   }
-  if(posix_memalign((void **) &read_buf, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
-    fprintf(stderr, "Failed to allocate %dMB of page-aligned RAM.\n", TEST_MAX_BLOCK);
+  if (posix_memalign((void **) &read_buf, getpagesize(), TEST_MAX_BLOCK * 1024 * 1024) != 0) {
+    fprintf(stderr, "Failed to allocate %d MiB of page-aligned RAM.\n", TEST_MAX_BLOCK);
     exit(errno);
   }
-  if(posix_memalign((void **) &zeros, getpagesize(), 1024 * 1024) != 0) {
-    fprintf(stderr, "Failed to allocate 1MB of page-aligned RAM.\n");
+  if (posix_memalign((void **) &zeros, getpagesize(), 1024 * 1024) != 0) {
+    fprintf(stderr, "Failed to allocate 1 MiB of page-aligned RAM.\n");
     exit(errno);
   }
 
@@ -241,10 +240,10 @@ void assemble_data(void) {
   }
 }
 
-void fill_out(int fd, uint16_t size, char *path) {
+static void fill_out(int fd, uint16_t size, char *path) {
   uint16_t i;
 
-  fprintf(stdout, "Benchmark size set to: %hdMB.\n", bench_size);
+  fprintf(stdout, "Benchmark size: %hd MiB.\n", bench_size);
   fprintf(stdout, "Filling out the benchmark file...");
 
   for(i = 0; i < bench_size; i ++) {
@@ -256,22 +255,24 @@ void fill_out(int fd, uint16_t size, char *path) {
 #ifndef _GNU_SOURCE
     fdatasync(fd);
 #endif
-    if(i % 4 == 3)fprintf(stdout, ".");
+    if(i % 4 == 3) {
+      fprintf(stdout, ".");
+    }
   }
 
   fsync(fd);
   fprintf(stdout, "done.\n");
 }
 
-uint32_t calc_ms(struct timespec before, struct timespec after) {
+static uint32_t calc_ms(struct timespec before, struct timespec after) {
   return (after.tv_sec - before.tv_sec) * 1000 + (after.tv_nsec - before.tv_nsec) / 1000000;
 }
 
-void do_bench(int fd, char packet, uint16_t size) {
+static void do_bench(int fd, char packet, uint16_t size) {
   if(fd == -1 || size < 8) abort();
   static uint64_t        i, loops, packet_size;
   static struct timespec tp_pre, tp_post;
-  static struct stat stat_buf;
+  static struct stat     stat_buf;
 
   // Translate symbol
   packet_size = 512;
@@ -302,8 +303,11 @@ void do_bench(int fd, char packet, uint16_t size) {
   }
 
   // Print information
-  if(packet_size == 512) fprintf(stdout, " 0.5 ");
-  else fprintf(stdout, "%4ld ", packet_size / 1024UL);
+  if(packet_size == 512) {
+    fprintf(stdout, " 0.5 ");
+  } else {
+    fprintf(stdout, "%4ld ", packet_size / 1024UL);
+  }
 
   // Clear the effects from last loop
   lseek(fd, 0, SEEK_SET);
@@ -313,7 +317,9 @@ void do_bench(int fd, char packet, uint16_t size) {
   // Write benchmark
   clock_gettime(TIMER, &tp_pre);
 #ifdef _GNU_SOURCE
-  for(i = 0; i < loops; i ++) write(fd, write_buf, packet_size);
+  for(i = 0; i < loops; i ++) {
+    write(fd, write_buf, packet_size);
+  }
 #else
   // Not-so-good performance mode
   for(i = 0; i < loops; i ++) {
@@ -326,8 +332,9 @@ void do_bench(int fd, char packet, uint16_t size) {
   if(stat(fn, &stat_buf) == -1) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
     exit(errno);
+  } else {
+    fprintf(stdout, "%8ld ", size * 1024UL * 1024UL / calc_ms(tp_pre, tp_post));
   }
-  else fprintf(stdout, "%8ld ", size * 1024UL * 1024UL / calc_ms(tp_pre, tp_post));
 
   // Clear the effects from last loop
   lseek(fd, 0, SEEK_SET);
@@ -337,66 +344,140 @@ void do_bench(int fd, char packet, uint16_t size) {
   // Read benchmark
   clock_gettime(TIMER, &tp_pre);
 #ifdef _GNU_SOURCE
-  for(i = 0; i < loops; i ++) read(fd, read_buf, packet_size);
+  for (i = 0; i < loops; i ++) {
+    read(fd, read_buf, packet_size);
+  }
 #else
   // The not-garuanteed method plus really poor performance
   // because you need to call posix_fadvise every time.
   // Maybe time each loop and finally sum up will make it better.
   // Then remove the warning in main function.
-  for(i = 0; i < loops; i ++) {
+  for (i = 0; i < loops; i ++) {
     posix_fadvise(fd, 0, (off_t)size * 1024 * 1024, POSIX_FADV_DONTNEED);
     read(fd, read_buf, packet_size);
   }
 #endif
   clock_gettime(TIMER, &tp_post);
-  if(stat(fn, &stat_buf) == -1) {
+  if (stat(fn, &stat_buf) == -1) {
     fprintf(stderr, "\nFile \"%s\" disappeared!\nPlease check device status.\n", fn);
     exit(errno);
+  } else {
+    fprintf(stdout, "%8ld\n", size * 1024UL * 1024UL / calc_ms(tp_pre, tp_post));
   }
-  else fprintf(stdout, "%8ld\n", size * 1024UL * 1024UL / calc_ms(tp_pre, tp_post));
+}
+
+static void print_info(char *path) {
+  time_t t;
+  struct utsname uname_buf;
+  struct statvfs stvfs_buf;
+  long   page_size;
+
+#ifdef EMBEDDED
+  fprintf(stdout, "This is ubench version %s for embedded devices.\n", VERSION);
+#else
+  fprintf(stdout, "This is ubench version %s.\n", VERSION);
+#endif
+
+  t = time(NULL);
+  fprintf(stdout, "Time: %s", ctime(&t)); /* ctime comes with newline. */
+
+  if (uname(&uname_buf) != 0) {
+    fprintf(stdout, "Failed to get system information: %s\n", strerror(errno));
+  } else {
+    fprintf(stdout, "OS: %s %s\nArch: %s\n", uname_buf.sysname, uname_buf.release, uname_buf.machine);
+  }
+
+  page_size = sysconf(_SC_PAGESIZE) / 1024;
+  fprintf(stdout, "RAM: %.2f MiB free out of %.2f MiB, %ld KiB pages\n", sysconf(_SC_AVPHYS_PAGES) / 1024.0f * page_size, sysconf(_SC_PHYS_PAGES) / 1024.0f * page_size, page_size);
+
+  // TODO: also print processor speed info.
+
+  if (statvfs(path, &stvfs_buf) != 0) {
+    fprintf(stdout, "Failed to get system information: %s\n", strerror(errno));
+  } else {
+    float br = stvfs_buf.f_frsize / 1024.0f / 1024.0f / 1024.0f;
+    if (stvfs_buf.f_flag & ST_RDONLY) {
+      fprintf(stderr, "Target file system is read-only! Cannot proceed.");
+      exit(EACCES);
+    }
+    fprintf(stdout, "Target Disk: %.2f GiB free out of %.2f GiB, %lu%s KiB blocks%s%s%s%s%s\n",
+            stvfs_buf.f_bfree * br, stvfs_buf.f_blocks * br, stvfs_buf.f_bsize / 1024, (stvfs_buf.f_bsize == 512) ? ".5" : "", /* FSID is not very useful, so skipped. */
+            (stvfs_buf.f_flag & ST_NOATIME) ? ", NOATIME" : "",
+            (stvfs_buf.f_flag & ST_NODIRATIME) ? ", NODIRATIME" : "",
+            (stvfs_buf.f_flag & ST_RDONLY) ? ", RO" : "",
+            (stvfs_buf.f_flag & ST_RELATIME) ? ", RELATIME" : "",
+            (stvfs_buf.f_flag & ST_SYNCHRONOUS) ? ", SYNC" : ""
+           );
+    if (stvfs_buf.f_flag & ST_SYNCHRONOUS) {
+      fprintf(stdout, "Warning: target is mounted with SYNC flag, which might affect results.\n");
+    }
+  }
+  // TODO: also print some information about target device (rather than fs).
+
+#ifndef _GNU_SOURCE
+  fprintf(stdout, "Warning: O_DIRECT is not supported on this platform.\n\
+Read speed will be lower than its actual value while packet size is small.\n");
+#endif
+}
+
+static void print_stats(void) {
+  struct rusage usage;
+
+  if (getrusage(RUSAGE_SELF, &usage) != 0) {
+    fprintf(stdout, "Failed to get statistics: %s\n", strerror(errno));
+  } else {
+    fprintf(stdout, "CPU Time: %.3f s USER / %.3f s SYS\n", usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1e6, usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1e6);
+    fprintf(stdout, "Peak RAM Usage: %.3f MiB, %ld Soft Page Faults, %ld Hard Page Faults\n", usage.ru_maxrss / 1024.0f, usage.ru_minflt, usage.ru_majflt); /* ru_maxrss is in KiB. */
+#ifdef __linux
+    fprintf(stdout, "Block IO: %ld In, %ld Out\n", usage.ru_inblock, usage.ru_oublock);
+    fprintf(stdout, "Context Switches: %ld Voluntary, %ld Involuntary\n", usage.ru_nvcsw, usage.ru_nivcsw);
+#endif
+  }
 }
 
 int main(int argc, char *argv[]) {
-  struct stat    stat_buf;
-  struct utsname uname_buf;
-  char           *mount_point;
-  int            o;
+  struct stat stat_buf;
+  char        *mount_point;
+  int         o;
 
   setbuf(stdout, NULL);
-  myself      = argv[0];
   mount_point = NULL;
 
   // Check argument
   opterr = 0;
-  while((o = getopt(argc, argv, "a:hp:s:")) != -1) {
+  while ((o = getopt(argc, argv, "a:hp:s:")) != -1) {
     switch(o) {
-      case 'h': print_help();
+      case 'h': print_help(argv[0]);
       case 's':
-        if(!is_uint(optarg)) {
+        if (!is_uint(optarg)) {
           fprintf(stderr, "Invalid benchmark size: %s.\n\n", optarg);
-          print_help();
+          print_help(argv[0]);
         }
         sscanf(optarg, "%hu", &bench_size);
-        if((bench_size % 8) != 0 || bench_size == 0) {
+        if ((bench_size / TEST_MAX_BLOCK) <= 0) {
           fprintf(stderr, "Invalid benchmark size: %s.\n\n", optarg);
-          print_help();
+          print_help(argv[0]);
+        }
+        if ((bench_size % TEST_MAX_BLOCK) != 0) {
+          bench_size = (bench_size / TEST_MAX_BLOCK) * TEST_MAX_BLOCK;
+          fprintf(stdout, "Shrinking benchmark size to %d MiB.\n", bench_size);
         }
         break;
       case 'a':
         size_pattern = argv[optind - 1];
-        check_pattern(size_pattern);
+        check_pattern(size_pattern, argv[0]);
         break;
       case 'p':
         mount_point = argv[optind - 1];
         break;
       case '?':
-        if(optopt == 'c') {
+        if (optopt == 'c') {
           fprintf(stderr, "Option -%c requires an argument.\n\n", optopt);
-          print_help();
+          print_help(argv[0]);
         }
-        if(isprint(optopt)) {
+        if (isprint(optopt)) {
           fprintf(stderr, "Unknown option `-%c'.\n\n", optopt);
-          print_help();
+          print_help(argv[0]);
         }
         fprintf(stderr, "Unknown option character `\\x%x'.\n", optopt);
         return EINVAL;
@@ -406,26 +487,22 @@ int main(int argc, char *argv[]) {
       }
     }
   }
-  if(mount_point == NULL) {
+  if (mount_point == NULL) {
     fprintf(stderr, "Missing mount point.\n\n");
-    print_help();
+    print_help(argv[0]);
   }
-  if(sizeof(TEST_FILE_NAME) + strlen(mount_point) > 510) {
+  if (MAX_PATH_LEN <= snprintf(fn, MAX_PATH_LEN, "%s/%s", mount_point, TEST_FILE_NAME)) {
     fprintf(stderr, "The mount point path provided is too looooong!\n");
     return E2BIG;
   }
-  sprintf(fn, "%s/%s", mount_point, TEST_FILE_NAME);
-
-  // TODO: Check mountpoint (noatime,async or so) and print device information
 
   // Check file existence
-  if(lstat(fn, &stat_buf) != -1) {
+  if (lstat(fn, &stat_buf) != -1) {
     fprintf(stderr, "Benchmark file \"%s\" already exists.\n\
 Please make sure no ubench is running on the device, \
 then remove it manually and try to start again.\n", fn);
     return EEXIST;
-  }
-  else if(errno != ENOENT) {
+  } else if (errno != ENOENT) {
     fprintf(stderr, "Something unexpected happened \
 while checking the existence of the benchmark file \"%s\".\n", fn);
     return errno;
@@ -434,6 +511,7 @@ while checking the existence of the benchmark file \"%s\".\n", fn);
   // Capture Ctrl-C after fn is set
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
+  signal(SIGHUP, signal_handler);
 
   // Attempt to open file for binary reading and writting
 #ifdef _GNU_SOURCE
@@ -443,13 +521,15 @@ while checking the existence of the benchmark file \"%s\".\n", fn);
   // but the read test is not garuanteed to work without O_DIRECT.
   fd = open(fn, O_RDWR | O_CREAT, 0644);
 #endif
-  if(fd == -1) {
+  if (fd == -1) {
     int err = errno;
     fprintf(stderr, "Unable to open \"%s\" for benchmark: %s.\n", fn, strerror(errno));
-    if(err == EINVAL) fprintf(stderr, "\
+    if (err == EINVAL) {
+      fprintf(stderr, "\
 ======================\n\
 It seems that opening the benchmark file with the O_DIRECT flag has failed.\n\
 Please make sure you are not running the benchmark on a RAM or MTD device.\n");
+    }
     fprintf(stderr, "\nCleaning up...\n");
     unlink(fn);
     return err;
@@ -457,36 +537,18 @@ Please make sure you are not running the benchmark on a RAM or MTD device.\n");
 
   // Everything looks right, let's start.
   assemble_data();
-
-#ifdef EMBEDDED
-  fprintf(stdout, "This is ubench version %s for embedded devices.\n", VERSION);
-#else
-  fprintf(stdout, "This is ubench version %s.\n", VERSION);
-#endif
-  // TODO: also print mainboard / RAM / processor speed info.
-  // TODO: also print some information about target device.
-  if(uname(&uname_buf) == -1) {
-    fprintf(stdout, "Failed to get system information due to error %s.\n", strerror(errno));
-  }
-  else {
-    fprintf(stdout, "OS: %s %s\nArch: %s\n", \
-    uname_buf.sysname, uname_buf.release, uname_buf.machine);
-  }
-#ifndef _GNU_SOURCE
-  fprintf(stdout, "Warning: O_DIRECT is not supported on this platform.\n\
-Read speed will be lower than its actual value while packet size is small.\n");
-#endif
+  print_info(fn);
   fill_out(fd, bench_size, fn);
 
   // Do the actual job
-  // TODO: add time stamp one start and stop messages
   fprintf(stdout, "Benchmark started.\n\nSIZE    WRITE     READ\n KiB     KB/s     KB/s\n\
 ======================\n");
-  while(*size_pattern) {
+  while (*size_pattern) {
     do_bench(fd, *size_pattern, bench_size);
     size_pattern++;
   }
   fprintf(stdout, "\nBenchmark finished.\n");
+  print_stats();
 
   // Hopefully users would not move test file around.
   // Unlink by fd is no where to be found.
